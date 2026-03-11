@@ -1,0 +1,30 @@
+def inicia_importacao():
+    spark = SparkSession.builder \
+        .appName("XLS-to-Iceberg") \
+        .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog") \
+        .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog") \
+        .config("spark.sql.catalog.glue_catalog.warehouse", f"{BUCKET_S3}/warehouse/")
+    .getOrCreate()
+ 
+    # 1. Ler XLS do bucket origem usando boto3 + pandas
+    s3 = boto3.client("s3")
+
+    obj = s3.get_object(Bucket=BUCKET_ORIGEM, Key=ARQUIVO)
+    data = obj["Body"].read()
+
+    df_pandas = pd.read_excel(BytesIO(data), engine="openpyxl")
+
+    # 2. Converter pandas → Spark DataFrame
+    df_spark = spark.createDataFrame(df_pandas)
+
+    # 3. Criar tabela Iceberg no Glue Catalog (se não existir)
+    #spark.sql(f"""
+    #CREATE TABLE IF NOT EXISTS {tabela_nome}
+    #USING ICEBERG
+    #LOCATION 's3://{bucket_destino}/tabelas/minha_tabela_iceberg'
+    #AS SELECT 1 as dummy
+    #""") 
+    
+    # 4. Escrever dados no formato Iceberg (append para não sobrescrever)
+    df_spark.writeTo(TABELA).append()
+    return "carga concluida!"
