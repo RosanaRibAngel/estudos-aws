@@ -3,12 +3,11 @@
 # importa para a tabela iceberg tab_quina, criando a tabela e banco caso nao existam
 # *****************************
 
-from pyspark.sql import SparkSession
 import boto3
 import pandas as pd
 from io import BytesIO
 from botocore.exceptions import ClientError
-
+from pyspark.sql import SparkSession
 
 #----------------------------------------------cria tabela -------------------------------------------------------------------------------
 DATA_BASE='db_sorteio_caixa'
@@ -57,8 +56,6 @@ def cria_database(database_name):
         return "Falha na criação do banco"    
  
 def cria_table(database_name, table_name):
-    
-
     spark = (
         SparkSession.builder
         .appName("XLS-to-Iceberg")
@@ -121,13 +118,10 @@ def inicia_importacao():
         obj = s3.get_object(Bucket=BUCKET_ORIGEM, Key=ARQUIVO)
         data = obj["Body"].read()
     
-        df_pandas = pd.read_excel(BytesIO(data), engine="openpyxl")
+        #df_pandas = pd.read_excel(BytesIO(data), engine="openpyxl")
+        df_pandas = pd.read_excel(BytesIO(obj['Body'].read()), engine="openpyxl")
 
         # 2. Converter pandas → Spark DataFrame
-        # Ler XLS do bucket origem usando boto3 + pandas
-        obj = s3.get_object(Bucket=BUCKET_ORIGEM, Key=ARQUIVO)
-        df_pandas = pd.read_excel(BytesIO(obj['Body'].read()), engine="openpyxl")
-        
         # Normalizar nomes de colunas: tirar espaços, '/' e acentos
         df_pandas.columns = (
             df_pandas.columns
@@ -140,15 +134,12 @@ def inicia_importacao():
         df_spark = spark.createDataFrame(df_pandas) 
     
         # 4. Escrever dados no formato Iceberg (append para não sobrescrever) 
-        #df_spark.writeTo(f"glue_catalog.{DATA_BASE}.{TABELA}").append()
         df_spark.printSchema()
         df_spark.show(5)
-        
         print("Estrutura do DataFrame:")
         df_spark.printSchema() 
         print("Colunas:")
         print(df_spark.columns)
-        
         print("Gravando na tabela Iceberg...")
         
         df_spark.writeTo(f"glue_catalog.{DATA_BASE}.{TABELA}").append()
@@ -170,6 +161,7 @@ def main():
         else:
             print("Tabela não encontrada.")
             print(cria_table(DATA_BASE, TABELA))
+            print (inicia_importacao())
     else:
         print(cria_database(DATA_BASE))
         print(cria_table(DATA_BASE, TABELA))
