@@ -1,30 +1,37 @@
-def inicia_importacao():
-    spark = SparkSession.builder \
-        .appName("XLS-to-Iceberg") \
-        .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog") \
-        .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog") \
-        .config("spark.sql.catalog.glue_catalog.warehouse", f"{BUCKET_S3}/warehouse/")
-    .getOrCreate()
- 
-    # 1. Ler XLS do bucket origem usando boto3 + pandas
-    s3 = boto3.client("s3")
+# -------------------------------------
+# ESTE JOB OBTEM DO SITE DA CAIXA A PLANILHA Quina.xlsx E 
+# GRAVA NO BUCKET landing-sorteios NO S3
+# **** NAO FUNCIONA pois o site da caixa bloqueia acesso via data center inclusive aws retornando erro 403
+# -------------------------------------
+import boto3
+import httpx
 
-    obj = s3.get_object(Bucket=BUCKET_ORIGEM, Key=ARQUIVO)
-    data = obj["Body"].read()
+url = "https://servicebus2.caixa.gov.br/portaldeloterias/api/resultados/download?modalidade=Quina"
 
-    df_pandas = pd.read_excel(BytesIO(data), engine="openpyxl")
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+    "Accept": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/octet-stream,*/*",
+    "Referer": "https://loterias.caixa.gov.br/",
+    "Origin": "https://loterias.caixa.gov.br"
+}
 
-    # 2. Converter pandas → Spark DataFrame
-    df_spark = spark.createDataFrame(df_pandas)
+with httpx.Client(http2=True, headers=headers, follow_redirects=True, timeout=60) as client:
+    response = client.get(url)
 
-    # 3. Criar tabela Iceberg no Glue Catalog (se não existir)
-    #spark.sql(f"""
-    #CREATE TABLE IF NOT EXISTS {tabela_nome}
-    #USING ICEBERG
-    #LOCATION 's3://{bucket_destino}/tabelas/minha_tabela_iceberg'
-    #AS SELECT 1 as dummy
-    #""") 
-    
-    # 4. Escrever dados no formato Iceberg (append para não sobrescrever)
-    df_spark.writeTo(TABELA).append()
-    return "carga concluida!"
+print("Status:", response.status_code)
+print("Tamanho:", len(response.content))
+
+local_file = "/tmp/Quina.xlsx"
+
+with open(local_file, "wb") as f:
+    f.write(response.content)
+
+s3 = boto3.client("s3")
+
+s3.upload_file(
+    local_file,
+    "landing-sorteios",
+    "Quina.xlsx"
+)
+
+print("Upload concluído")
