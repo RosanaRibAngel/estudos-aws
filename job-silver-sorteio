@@ -1,0 +1,223 @@
+
+# -----------------***************--------------------
+# Este Job grava na tabela xxx os dados a partir da tabela iceberg tab_quina
+# Com as analises preditivas prelimires que servirão de base para treinar o modelo
+# Esta tabela conterá os dados exploratorios a partir da tab_quina gerada na Bronze
+# -----------------***************--------------------
+
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+
+from pyspark.sql.functions import (
+    col, split, explode, trim,
+    year, month, dayofmonth, date_format,
+    sqrt, pow, greatest, least,
+    lag, sum, when, count
+)
+
+from pyspark.sql.window import Window
+
+DATA_BASE = "db_sorteio_caixa"
+TABELA_ORIGEM = "tab_quina"
+TABELA_DESTINO = "tab_quina_features"
+
+def main():
+    
+    spark = ( 
+        SparkSession.builder
+        .appName("feature-engineering-quina")
+        .config("spark.sql.catalog.glue_catalog","org.apache.iceberg.spark.SparkCatalog")
+        .config("spark.sql.catalog.glue_catalog.catalog-impl","org.apache.iceberg.aws.glue.GlueCatalog")
+        .config("spark.sql.catalog.glue_catalog.warehouse","s3://bronze-sorteios/dados/")
+        .getOrCreate()
+    )
+    
+    # -------------------------
+    # Ler tabela Iceberg
+    # -------------------------
+    
+    df = spark.read.format("iceberg").load(
+        f"glue_catalog.{DATA_BASE}.{TABELA_ORIGEM}"
+    )
+    
+    # -------------------------
+    # Converter tipos
+    # -------------------------
+
+    df = df.withColumn("Data_Sorteio", F.to_date(F.col("Data_Sorteio"), "dd/MM/yyyy"))
+
+    #df = df.withColumn("Data_Sorteio", to_date("Data_Sorteio", "dd/MM/yyyy"))
+    
+    for c in ["Bola1","Bola2","Bola3","Bola4","Bola5"]:
+        df = df.withColumn(c, col(c).cast("int"))
+    
+    # -------------------------
+    # Separar cidade e UF
+    # -------------------------
+    
+    
+    # separa os múltiplos ganhadores
+    df = df.withColumn(
+        "cidade_uf_split",
+        explode(split(col("Cidade_UF"), ";"))
+    )
+    
+    # remove espaços extras
+    df = df.withColumn(
+        "cidade_uf_split",
+        trim(col("cidade_uf_split"))
+    )
+    
+    # separa cidade e UF
+    df = df.withColumn(
+        "cidade",
+        split(col("cidade_uf_split"), "/").getItem(0)
+    )
+    
+    df = df.withColumn(
+        "uf",
+        split(col("cidade_uf_split"), "/").getItem(1)
+    )
+    
+    df = df.drop("cidade_uf_split")
+    
+    # -------------------------
+    # Features de data
+    # -------------------------
+    
+    df = df.withColumn("ano_sorteio", year("Data_Sorteio")) \
+           .withColumn("mes_sorteio", month("Data_Sorteio")) \
+           .withColumn("dia_sorteio", dayofmonth("Data_Sorteio")) \
+           .withColumn("dia_semana", date_format("Data_Sorteio","E"))
+    
+    # -------------------------
+    # Estatísticas das bolas
+    # -------------------------
+    
+    df = df.withColumn(
+        "soma_bolas",
+        col("Bola1")+col("Bola2")+col("Bola3")+col("Bola4")+col("Bola5")
+    )
+    
+    df = df.withColumn(
+        "media_bolas",
+        col("soma_bolas")/5
+    )
+    
+    df = df.withColumn(
+        "desvio_bolas",
+        sqrt(
+            (
+            pow(col("Bola1")-col("media_bolas"),2) +
+            pow(col("Bola2")-col("media_bolas"),2) +
+            pow(col("Bola3")-col("media_bolas"),2) +
+            pow(col("Bola4")-col("media_bolas"),2) +
+            pow(col("Bola5")-col("media_bolas"),2)
+            )/5
+        )
+    )
+    
+    df = df.withColumn(
+        "dif_maior_menor",
+        greatest("Bola1","Bola2","Bola3","Bola4","Bola5")
+        -
+        least("Bola1","Bola2","Bola3","Bola4","Bola5")
+    )
+    
+    # -------------------------
+    # Pares / ímpares
+    # -------------------------
+    
+    df = df.withColumn(
+        "qtd_pares",
+        (col("Bola1")%2==0).cast("int") +
+        (col("Bola2")%2==0).cast("int") +
+        (col("Bola3")%2==0).cast("int") +
+        (col("Bola4")%2==0).cast("int") +
+        (col("Bola5")%2==0).cast("int")
+    )
+    
+    df = df.withColumn(
+        "qtd_impares",
+        5 - col("qtd_pares")
+    )
+    
+    # -------------------------
+    # Estado anterior
+    # -------------------------
+    
+    window_order = Window.orderBy("Data_Sorteio")
+    
+    df = df.withColumn(
+        "uf_anterior",
+        lag("uf").over(window_order)
+    )
+    
+    # -------------------------
+    # Frequência UF
+    # -------------------------
+    
+    def freq_estado(n):
+        w = Window.partitionBy("uf").orderBy("Data_Sorteio").rowsBetween(-n, -1)
+        return count("uf").over(w)
+    
+    df = df.withColumn("frequencia_estado_7_concurso", freq_estado(7)) \
+       .withColumn("frequencia_estado_30_concurso", freq_estado(30)) \
+       .withColumn("frequencia_estado_90_concurso", freq_estado(90)) \
+       .withColumn("frequencia_estado_180_concurso", freq_estado(180))
+    
+    # -------------------------
+    # Frequência bolas
+    # -------------------------
+    
+    for i in range(1,6):
+    
+        w = Window.orderBy("Data_Sorteio").rowsBetween(-7,-1)
+    
+        df = df.withColumn(
+            f"frequencia_bola{i}_7_concurso",
+            sum(col(f"Bola{i}")).over(w)
+        )
+    
+    # -------------------------
+    # Selecionar colunas finais
+    # -------------------------
+    
+    df_final = df.select(
+    "concurso",
+    "cidade",
+    "uf",
+    "ano_sorteio",
+    "mes_sorteio",
+    "dia_sorteio",
+    "dia_semana",
+    "soma_bolas",
+    "media_bolas",
+    "desvio_bolas",
+    "qtd_pares",
+    "qtd_impares",
+    "dif_maior_menor",
+    "uf_anterior",
+    "frequencia_estado_7_concurso",
+    "frequencia_estado_30_concurso",
+    "frequencia_estado_90_concurso",
+    "frequencia_estado_180_concurso",
+    "frequencia_bola1_7_concurso",
+    "frequencia_bola2_7_concurso",
+    "frequencia_bola3_7_concurso",
+    "frequencia_bola4_7_concurso",
+    "frequencia_bola5_7_concurso"
+    )
+    
+    # -------------------------
+    # Gravar tabela Iceberg
+    # -------------------------
+    
+    df_final.writeTo(
+        f"glue_catalog.{DATA_BASE}.{TABELA_DESTINO}"
+    ).createOrReplace()
+    
+    print("Tabela de features criada com sucesso!")
+
+if __name__=="__main__":
+    main() 
