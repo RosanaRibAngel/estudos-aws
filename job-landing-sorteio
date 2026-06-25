@@ -5,8 +5,45 @@
 # -------------------------------------
 import boto3
 import httpx
+import requests
+ 
 
-url = "https://servicebus2.caixa.gov.br/portaldeloterias/api/resultados/download?modalidade=Quina"
+ 
+# Exemplo: suponha que você achou o endpoint real
+url = "https://servicebus2.caixa.gov.br/portaldeloterias/api/quina"
+headers = {"User-Agent": "Mozilla/5.0"}
+response = requests.get(url, headers=headers)
+
+s3 = boto3.client("s3")
+bucket_name = "landing-sorteios"
+s3_key = "quina.csv"
+
+s3.put_object(Bucket=bucket_name, Key=s3_key, Body=response.content)
+print(f"Arquivo salvo em s3://{bucket_name}/{s3_key}")
+
+
+"""
+# -------------------------------------------versao roda via webscraping e salva no bucket
+# URL da planilha
+url = "https://loterias.caixa.gov.br/Paginas/Quina.aspx"
+response = requests.get(url)
+
+# Salvar temporariamente no container do Glue
+local_path = "/tmp/Quina.xlsx"
+with open(local_path, "wb") as f:
+    f.write(response.content)
+
+# Upload para S3
+s3 = boto3.client("s3")
+bucket_name = "landing-sorteios"
+s3_key = "Quina.xlsx"
+
+s3.upload_file(local_path, bucket_name, s3_key)
+print(f"Arquivo salvo em s3://{bucket_name}/{s3_key}")
+# -------------------------------------------versao roda direto da api e salva no bucket
+
+#url = "https://servicebus2.caixa.gov.br/portaldeloterias/api/resultados/download?modalidade=Quina"
+url="https://servicebus2.caixa.gov.br/portaldeloterias/api/quina"
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
@@ -35,3 +72,4 @@ s3.upload_file(
 )
 
 print("Upload concluído")
+"""
