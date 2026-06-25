@@ -102,56 +102,62 @@ def cria_table(database_name, table_name):
 # Inicia Importacao da planilha
 # ----------------------- 
 def inicia_importacao():
-    try:
-        spark = (
-            SparkSession.builder
-            .appName("XLS-to-Iceberg")
-            .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog")
-            .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
-            .config("spark.sql.catalog.glue_catalog.warehouse", BUCKET_S3)
-            .getOrCreate()
-        )
- 
-        # 1. Ler XLS do bucket origem usando boto3 + pandas
-        s3 = boto3.client("s3")
-    
-        obj = s3.get_object(Bucket=BUCKET_ORIGEM, Key=ARQUIVO)
-        data = obj["Body"].read()
-    
-        df_pandas = pd.read_excel(BytesIO(data), engine="openpyxl")
-        #df_pandas = pd.read_excel(BytesIO(obj['Body'].read()), engine="openpyxl")
+    #try:
+    spark = (
+        SparkSession.builder
+        .appName("XLS-to-Iceberg")
+        .config("spark.sql.catalog.glue_catalog", "org.apache.iceberg.spark.SparkCatalog")
+        .config("spark.sql.catalog.glue_catalog.catalog-impl", "org.apache.iceberg.aws.glue.GlueCatalog")
+        .config("spark.sql.catalog.glue_catalog.warehouse", BUCKET_S3)
+        .getOrCreate()
+    )
 
-        # 2. Converter pandas → Spark DataFrame
-        # Normalizar nomes de colunas: tirar espaços, '/' e acentos
-        df_pandas.columns = (
-            df_pandas.columns
-            .str.strip()
-            .str.replace(r'[ /]+', '_', regex=True)
-            .str.normalize('NFKD')
-            .str.encode('ascii', errors='ignore')
-            .str.decode('utf-8')
-        )
-        df_spark = spark.createDataFrame(df_pandas) 
+    # 1. Ler XLS do bucket origem usando boto3 + pandas
+    s3 = boto3.client("s3")
+
+    obj = s3.get_object(Bucket=BUCKET_ORIGEM, Key=ARQUIVO)
+    data = obj["Body"].read()
+
+    df_pandas = pd.read_excel(BytesIO(data), engine="openpyxl")
+    #df_pandas = pd.read_excel(BytesIO(obj['Body'].read()), engine="openpyxl")
+
+    # 2. Converter pandas → Spark DataFrame
+    # Normalizar nomes de colunas: tirar espaços, '/' e acentos
+    df_pandas.columns = (
+        df_pandas.columns
+        .str.strip()
+        .str.replace(r'[ /]+', '_', regex=True)
+        .str.normalize('NFKD')
+        .str.encode('ascii', errors='ignore')
+        .str.decode('utf-8')
+    )
+    df_spark = spark.createDataFrame(df_pandas) 
+
+    # 4. Escrever dados no formato Iceberg (append para não sobrescrever) 
+    df_spark.printSchema()
+    df_spark.show(5)
+    print("Estrutura do DataFrame:")
+    df_spark.printSchema() 
+    print("Colunas:")
+    print(df_spark.columns)
+    print("Gravando na tabela Iceberg...")
     
-        # 4. Escrever dados no formato Iceberg (append para não sobrescrever) 
-        df_spark.printSchema()
-        df_spark.show(5)
-        print("Estrutura do DataFrame:")
-        df_spark.printSchema() 
-        print("Colunas:")
-        print(df_spark.columns)
-        print("Gravando na tabela Iceberg...")
+    
+    print("Truncando tabela Iceberg...")
+    spark.sql(f"TRUNCATE TABLE glue_catalog.{DATA_BASE}.{TABELA}")
+    
+    print("Gravando na tabela Iceberg...")
+    df_spark.writeTo(f"glue_catalog.{DATA_BASE}.{TABELA}").append()
+    
+    print("Carga concluída!")
+    return "carga concluida!"
         
-        df_spark.writeTo(f"glue_catalog.{DATA_BASE}.{TABELA}").append()
-        
-        print("Carga concluída!")
-        return "carga concluida!"
-        
+    """
     except Exception as e:
         print("ERRO AO GRAVAR NO ICEBERG:")
         print(str(e))
         raise
-    
+    """
 def main():
     
     if valida_banco(DATA_BASE):
